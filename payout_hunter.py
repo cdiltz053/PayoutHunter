@@ -143,7 +143,38 @@ class PayoutHunter:
             if match:
                 return match.group(0).strip()
 
-            # 2. Search for the key in JavaScript variables (more aggressive pen-testing)
+            # 2. Search for the key in JavaScript variables and client-side storage (most aggressive pen-testing)
+            
+            # Function to search storage (Local and Session)
+            def search_storage(storage_type):
+                try:
+                    # Execute JS to dump all keys and values from the storage type
+                    storage_data = self.driver.execute_script(f"""
+                        let data = {{}};
+                        for (let i = 0; i < {storage_type}.length; i++) {{
+                            let key = {storage_type}.key(i);
+                            data[key] = {storage_type}.getItem(key);
+                        }}
+                        return data;
+                    """)
+                    for key, value in storage_data.items():
+                        if value and re.search(PHONE_NUMBER_PATTERN, value):
+                            return value.strip()
+                except:
+                    pass
+                return None
+
+            # Search Local Storage
+            storage_key = search_storage('localStorage')
+            if storage_key:
+                return storage_key
+
+            # Search Session Storage
+            storage_key = search_storage('sessionStorage')
+            if storage_key:
+                return storage_key
+
+            # 3. Search Global JavaScript Variables (original logic)
             js_script = """
             function findPhoneNumber(obj) {
                 const pattern = /\(\d{3}\)\s*\d{3}-\d{4}|\d{10}/;
@@ -160,7 +191,7 @@ class PayoutHunter:
             if js_key:
                 return js_key.strip()
 
-            # 3. Search hidden inputs (original logic)
+            # 4. Search hidden inputs (original logic)
             hidden_inputs = self.driver.find_elements(by=webdriver.common.by.By.XPATH, value="//input[@type='hidden']")
             for element in hidden_inputs:
                 value = element.get_attribute('value')
