@@ -71,10 +71,11 @@ class PayoutHunter:
                 'total_checked': 0,
                 'total_found': 0,
                 'last_found': None,
-                'hunt_sessions': 0
+                'hunt_sessions': 0,
+                'checks_per_sec': 0 # Added for dashboard
             }
 
-    def save_found_link(self, url):
+    def save_found_link(self, url, key_status):
         data = {'links': []}
         try:
             with open(FOUND_LINKS_FILE, 'r') as f:
@@ -85,14 +86,16 @@ class PayoutHunter:
             'url': url,
             'id': url.split('=')[-1],
             'found_at': datetime.now().isoformat(),
-            'session': self.stats['hunt_sessions']
+            'session': self.stats['hunt_sessions'],
+            'key_status': key_status # Added for dashboard
         })
         with open(FOUND_LINKS_FILE, 'w') as f:
             json.dump(data, f, indent=2)
 
-    def save_stats(self):
+    def save_stats(self, checks_per_sec=0):
         self.stats['total_checked'] = self.checks_count
         self.stats['total_found'] = len(self.found_links)
+        self.stats['checks_per_sec'] = checks_per_sec # Updated for dashboard
         with open(STATS_FILE, 'w') as f:
             json.dump(self.stats, f, indent=2)
 
@@ -115,7 +118,6 @@ class PayoutHunter:
             session = self.session
         for retry in range(MAX_RETRIES + 1):
             try:
-                # NEW: Use randomized headers
                 headers = self.get_random_headers()
                 async with session.get(url, allow_redirects=False, ssl=False, headers=headers) as response:
                     if response.status in [301, 302, 303, 307, 308]:
@@ -139,7 +141,6 @@ class PayoutHunter:
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        # NEW: Set randomized User-Agent for Selenium
         options.add_argument(f'user-agent={self.ua.random}')
         
         try:
@@ -283,7 +284,6 @@ class PayoutHunter:
             title = '💰 New Payout Found!'
         def notify():
             try:
-                # NEW: Use randomized headers for Pushover request as well
                 headers = self.get_random_headers()
                 requests.post(
                     "https://api.pushover.net/1/messages.json",
@@ -297,7 +297,7 @@ class PayoutHunter:
                         "priority": 1,
                         "sound": "cashregister"
                     },
-                    headers=headers, # Use randomized headers
+                    headers=headers,
                     timeout=5
                 )
                 print(f"   📱 Notification sent!")
@@ -317,7 +317,7 @@ class PayoutHunter:
             if url:
                 if url not in self.found_links:
                     self.found_links.add(url)
-                    self.save_found_link(url)
+                    
                     key = self.analyze_and_extract_key(url)
                     
                     if not key:
@@ -330,6 +330,7 @@ class PayoutHunter:
                     else:
                         key_status = f"Key: {key} (PASSIVE EXTRACTION SUCCESS)"
                     
+                    self.save_found_link(url, key_status) # Save link with status
                     self.send_notification(url, key)
                     self.stats['last_found'] = datetime.now().isoformat()
                     found_count += 1
@@ -343,6 +344,7 @@ class PayoutHunter:
         print(f"   - Batch size: {BATCH_SIZE}")
         print(f"   - OpSec Mode: ACTIVE (Randomized User-Agents)")
         print(f"   - Pen-Test Mode: ACTIVE (Invasive Key Extraction)")
+        print("   - Starting Dashboard on http://localhost:5000")
         print("   - Press Ctrl+C to stop")
         print("\n" + "="*40)
         self.stats['hunt_sessions'] += 1
@@ -352,8 +354,23 @@ class PayoutHunter:
             self.session = session
             while True:
                 try:
-                    await self.hunt_batch()
-                    self.save_stats()
+                    batch_start_time = time.time()
+                    found_in_batch = await self.hunt_batch()
+                    batch_duration = time.time() - batch_start_time
+                    
+                    # Calculate rate for dashboard
+                    checks_per_sec = BATCH_SIZE / batch_duration if batch_duration > 0 else 0
+                    
+                    print(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] "
+                        f"Checked: {self.checks_count:,.0f} | "
+                        f"Found: {len(self.found_links)} | "
+                        f"Rate: {checks_per_sec:,.0f}/s | "
+                        f"Batch time: {batch_duration:.2f}s | "
+                        f"Found this batch: {found_in_batch}"
+                    )
+                    
+                    self.save_stats(checks_per_sec) # Save stats including rate
                 except aiohttp.ClientConnectorError as e:
                     print(f"\n⚠️  Connection error: {e}. Check your internet or proxy.")
                     await asyncio.sleep(10)
