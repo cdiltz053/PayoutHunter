@@ -253,7 +253,7 @@ class PayoutHunter:
         try:
             self.driver.get(url)
             # Find the input field (assuming a common name like 'phone' or 'code')
-            # ***USER MUST CUSTOMIZE THIS XPATH***
+            # NOTE: User can customize this XPATH if the default fails
             input_field = self.driver.find_element(by=webdriver.common.by.By.XPATH, value="//input[@type='tel' or @name='phone' or @name='code']")
             submit_button = self.driver.find_element(by=webdriver.common.by.By.XPATH, value="//button[@type='submit' or contains(text(), 'Verify')]")
             
